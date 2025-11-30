@@ -93,9 +93,9 @@ def get_credentials():
     if "gcp_service_account" in st.secrets:
         try:
             credentials_dict = dict(st.secrets["gcp_service_account"])
-            creds = service_account.Credentials.from_service_account_info(
-                credentials_dict,
-                scopes=SCOPES
+            creds = Credentials.from_service_account_info(
+                json.loads(st.secrets["gcp_service_account"].to_json()),
+                scopes=["https://www.googleapis.com/auth/spreadsheets"]
             )
             return creds
         except Exception as e:
