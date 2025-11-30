@@ -5,7 +5,6 @@ import gspread
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
-from google.oauth2 import service_account
 import pickle
 import os
 import plotly.express as px
@@ -13,7 +12,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import warnings
-import json
 warnings.filterwarnings('ignore')
 
 # Page config
@@ -92,10 +90,13 @@ def get_credentials():
     # Method 1: Try Service Account (for Streamlit Cloud)
     if "gcp_service_account" in st.secrets:
         try:
+            # Convert st.secrets to dict
             credentials_dict = dict(st.secrets["gcp_service_account"])
+
+            # Create credentials from dict
             creds = Credentials.from_service_account_info(
-                json.loads(st.secrets["gcp_service_account"].to_json()),
-                scopes=["https://www.googleapis.com/auth/spreadsheets"]
+                credentials_dict,
+                scopes=SCOPES
             )
             return creds
         except Exception as e:
