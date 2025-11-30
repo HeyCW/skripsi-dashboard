@@ -2,11 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import gspread
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
-import pickle
-import os
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -62,10 +58,6 @@ st.markdown("""
 # --- CONFIG ---
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
 
-# Token file location (untuk menyimpan token hasil OAuth)
-TOKEN_FILE = "./credentials/token.pickle"
-
-
 # Multiple Sheets Configuration
 SHEETS_CONFIG = {
     "Redis List/Set": "https://docs.google.com/spreadsheets/d/1By9e0g-aFr3A37lvdSBNeE2BEwmzuTkePPm_Z2UzJYQ/edit?gid=0#gid=0",
@@ -77,96 +69,40 @@ SHEETS_CONFIG = {
     "Big Data Assignment 3": "https://docs.google.com/spreadsheets/d/1AlnkwRg_6WU-zr5yreWPDkAPEXU_mzrBfIUIt2DXwzM/edit?gid=0#gid=0"
 }
 
-def is_cloud_environment():
-    """Detect if running on Streamlit Cloud"""
-    # Streamlit Cloud sets specific environment variables
-    return os.getenv("STREAMLIT_SHARING_MODE") is not None or \
-           not os.path.exists("/usr/bin") or \
-           os.getenv("HOSTNAME", "").startswith("streamlit")
-
 def get_credentials():
-    """Get valid user credentials - supports both Service Account and OAuth"""
-
-    # Method 1: Try Service Account (for Streamlit Cloud)
-    if "gcp_service_account" in st.secrets:
-        try:
-            # Convert st.secrets to dict
-            credentials_dict = dict(st.secrets["gcp_service_account"])
-
-            # Create credentials from dict
-            creds = Credentials.from_service_account_info(
-                credentials_dict,
-                scopes=SCOPES
+    """Get Google Sheets credentials from Streamlit secrets"""
+    try:
+        # Check if gcp_service_account exists in secrets
+        if "gcp_service_account" not in st.secrets:
+            raise Exception(
+                "❌ Service Account tidak ditemukan!\n\n"
+                "Untuk Streamlit Cloud:\n"
+                "1. Buka Settings > Secrets di dashboard Streamlit Cloud\n"
+                "2. Tambahkan credentials dengan format:\n\n"
+                "[gcp_service_account]\n"
+                'type = "service_account"\n'
+                'project_id = "your-project-id"\n'
+                'private_key_id = "your-key-id"\n'
+                'private_key = """-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"""\n'
+                'client_email = "your-service-account@project.iam.gserviceaccount.com"\n'
+                'client_id = "123456789"\n'
+                'token_uri = "https://oauth2.googleapis.com/token"\n\n'
+                "3. Share Google Sheets ke service account email!"
             )
-            return creds
-        except Exception as e:
-            raise Exception(f"Service account error: {e}")
-
-    # Method 2: OAuth (ONLY for local development)
-    # Detect if running on cloud - if yes, block OAuth attempt
-    if is_cloud_environment():
-        raise Exception(
-            "🚫 OAuth tidak bisa digunakan di Streamlit Cloud!\n\n"
-            "Kamu harus setup Service Account:\n"
-            "1. Buat Service Account di Google Cloud Console\n"
-            "2. Download JSON key\n"
-            "3. Tambahkan ke Streamlit Cloud Secrets dengan key 'gcp_service_account'\n"
-            "4. Share Google Sheets ke service account email\n\n"
-            "📖 Baca panduan lengkap di STREAMLIT_CLOUD_SETUP.md"
+        
+        # Convert secrets to dictionary
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        
+        # Create credentials
+        creds = Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=SCOPES
         )
-
-    # OAuth flow for local development only
-    creds = None
-
-    # Load existing token if available
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, 'rb') as token:
-            creds = pickle.load(token)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as e:
-                st.warning(f"Token refresh gagal: {e}")
-                creds = None
-
-        if not creds:
-            # Create credentials config from Streamlit secrets
-            if "oauth" not in st.secrets:
-                raise Exception(
-                    "Tidak ada credentials yang tersedia!\n"
-                    "Tambahkan 'oauth' di .streamlit/secrets.toml untuk development lokal"
-                )
-
-            try:
-                client_config = {
-                    "installed": {
-                        "client_id": st.secrets["oauth"]["client_id"],
-                        "project_id": st.secrets["oauth"]["project_id"],
-                        "auth_uri": st.secrets["oauth"]["auth_uri"],
-                        "token_uri": st.secrets["oauth"]["token_uri"],
-                        "auth_provider_x509_cert_url": st.secrets["oauth"]["auth_provider_x509_cert_url"],
-                        "client_secret": st.secrets["oauth"]["client_secret"],
-                        "redirect_uris": st.secrets["oauth"]["redirect_uris"]
-                    }
-                }
-
-                flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-                creds = flow.run_local_server(port=0)
-
-                # Save token untuk reuse
-                os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
-                with open(TOKEN_FILE, 'wb') as token:
-                    pickle.dump(creds, token)
-
-            except KeyError as e:
-                raise Exception(
-                    f"OAuth credentials tidak lengkap. Missing: {e}\n"
-                    "Pastikan semua field oauth sudah diisi di .streamlit/secrets.toml"
-                )
-
-    return creds
+        
+        return creds
+        
+    except Exception as e:
+        raise Exception(f"Error loading credentials: {str(e)}")
 
 # Initialize authentication
 if 'authenticated' not in st.session_state:
@@ -177,178 +113,141 @@ if 'authenticated' not in st.session_state:
 if not st.session_state.authenticated:
     st.markdown('<div class="main-header">📊 Dashboard Analitik Mahasiswa</div>', unsafe_allow_html=True)
     
-    # Try auto-login if token exists
-    if os.path.exists(TOKEN_FILE):
-        try:
-            with st.spinner("🔄 Auto-login sedang berlangsung..."):
-                st.session_state.creds = get_credentials()
-                st.session_state.authenticated = True
-                st.success("Login berhasil!")
-                st.rerun()
-        except Exception as e:
-            st.error(f"Auto-login gagal: {e}")
-            if os.path.exists(TOKEN_FILE):
-                os.remove(TOKEN_FILE)
-            st.warning("Silakan login ulang dengan Google account")
-            
-            if st.button("Login dengan Google", type="primary"):
-                try:
-                    with st.spinner("Membuka browser untuk login..."):
-                        st.session_state.creds = get_credentials()
-                        st.session_state.authenticated = True
-                    st.success("Login berhasil!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Login gagal: {e}")
-                    st.info("Pastikan file credentials JSON sudah ada di folder yang benar.")
-    else:
-        # No token exists, show login button
-        st.warning("⚠️ Kamu perlu setup credentials untuk akses Google Sheets")
-
-        # Show environment info
-        env_type = "☁️ Streamlit Cloud" if is_cloud_environment() else "💻 Local Development"
-        st.info(f"**Environment:** {env_type}")
-
-        # Show setup instructions
-        with st.expander("📖 Setup Instructions"):
-            st.markdown("""
-            **Untuk menggunakan dashboard ini, pilih salah satu:**
-
-            ## 🔹 Option 1: Service Account (Recommended untuk Streamlit Cloud)
-
-            1. Buat Service Account di Google Cloud Console
-            2. Download JSON key file
-            3. Copy isi JSON ke Streamlit secrets dengan format:
-
-            ```toml
-            [gcp_service_account]
-            type = "service_account"
-            project_id = "your-project-id"
-            private_key_id = "your-private-key-id"
-            private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-            client_email = "your-service-account@project.iam.gserviceaccount.com"
-            client_id = "123456789"
-            auth_uri = "https://accounts.google.com/o/oauth2/auth"
-            token_uri = "https://oauth2.googleapis.com/token"
-            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-            client_x509_cert_url = "https://www.googleapis.com/..."
-            ```
-
-            4. **PENTING:** Share Google Sheets ke service account email!
-
-            ## 🔹 Option 2: OAuth (Untuk Development Lokal)
-
-            ```toml
-            [oauth]
-            client_id = "your-client-id"
-            project_id = "your-project-id"
-            auth_uri = "https://accounts.google.com/o/oauth2/auth"
-            token_uri = "https://oauth2.googleapis.com/token"
-            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-            client_secret = "your-client-secret"
-            redirect_uris = ["http://localhost"]
-            ```
-            """)
-
-        # Debug info
-        with st.expander("🔧 Debug - Credentials Status"):
-            # Environment detection
-            is_cloud = is_cloud_environment()
-            st.write("**Environment Detection:**")
-            if is_cloud:
-                st.error("🌐 Running on Streamlit Cloud")
-                st.write("OAuth is DISABLED on cloud. You must use Service Account.")
-            else:
-                st.success("💻 Running Locally")
-                st.write("OAuth is available for local development.")
-
-            st.divider()
-
-            st.write("**Available Credentials:**")
-
-            # Check Service Account
-            if "gcp_service_account" in st.secrets:
-                st.success("✅ Service Account config ditemukan!")
-                try:
-                    sa_email = st.secrets['gcp_service_account']['client_email']
-                    st.write(f"**Service Account Email:** `{sa_email}`")
-                    st.info("⚠️ PENTING: Pastikan Google Sheets sudah dishare ke email ini!")
-                except:
-                    pass
-            else:
-                if is_cloud:
-                    st.error("❌ Service Account WAJIB untuk Streamlit Cloud!")
-                    st.write("Tambahkan `gcp_service_account` di Streamlit Cloud Secrets")
-                else:
-                    st.warning("❌ Service Account tidak dikonfigurasi (Optional untuk lokal)")
-
-            st.divider()
-
-            # Check OAuth (only show if local)
-            if not is_cloud:
-                if "oauth" in st.secrets:
-                    st.success("✅ OAuth config ditemukan!")
-                    st.write("Keys available:", list(st.secrets["oauth"].keys()))
-                else:
-                    st.warning("❌ OAuth config tidak dikonfigurasi")
-
-                st.divider()
-
-                # Check token file
-                st.write("**Token File Status:**")
-                st.write(f"Token exists: {'Yes ✅' if os.path.exists(TOKEN_FILE) else 'No ❌'}")
-                if os.path.exists(TOKEN_FILE):
-                    st.write(f"Path: {TOKEN_FILE}")
-
-        # Conditional button text based on environment
-        is_cloud = is_cloud_environment()
-        button_text = "🔐 Connect to Google Sheets"
-
-        if st.button(button_text, type="primary"):
+    st.info("🔐 Connecting to Google Sheets...")
+    
+    # Show setup instructions
+    with st.expander("📖 Setup Instructions untuk Streamlit Cloud"):
+        st.markdown("""
+        ## Setup Service Account untuk Streamlit Cloud
+        
+        ### 1️⃣ Buat Service Account di Google Cloud Console
+        
+        1. Buka [Google Cloud Console](https://console.cloud.google.com/)
+        2. Buat project baru atau pilih existing project
+        3. Buka **IAM & Admin > Service Accounts**
+        4. Klik **Create Service Account**
+        5. Beri nama (contoh: `sheets-reader`)
+        6. Klik **Create and Continue**
+        7. Skip role assignment (klik **Continue**)
+        8. Klik **Done**
+        
+        ### 2️⃣ Generate JSON Key
+        
+        1. Klik service account yang baru dibuat
+        2. Tab **Keys** > **Add Key** > **Create new key**
+        3. Pilih **JSON** dan klik **Create**
+        4. File JSON akan terdownload
+        
+        ### 3️⃣ Enable Google Sheets API
+        
+        1. Di Google Cloud Console, buka **APIs & Services > Library**
+        2. Search "Google Sheets API"
+        3. Klik dan **Enable**
+        
+        ### 4️⃣ Share Google Sheets
+        
+        1. Buka Google Sheets yang ingin diakses
+        2. Klik **Share**
+        3. Copy **client_email** dari file JSON (format: `xxx@xxx.iam.gserviceaccount.com`)
+        4. Paste ke share dialog dan beri akses **Viewer**
+        5. Ulangi untuk semua sheets yang ingin diakses
+        
+        ### 5️⃣ Tambahkan ke Streamlit Cloud Secrets
+        
+        1. Buka app di Streamlit Cloud
+        2. Settings > Secrets
+        3. Copy format berikut dan isi dengan data dari JSON:
+        
+        ```toml
+        [gcp_service_account]
+        type = "service_account"
+        project_id = "your-project-id"
+        private_key_id = "your-private-key-id"
+        private_key = '''-----BEGIN PRIVATE KEY-----
+        MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC...
+        ...
+        -----END PRIVATE KEY-----'''
+        client_email = "your-service-account@your-project.iam.gserviceaccount.com"
+        client_id = "123456789012345678901"
+        auth_uri = "https://accounts.google.com/o/oauth2/auth"
+        token_uri = "https://oauth2.googleapis.com/token"
+        auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+        client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/your-service-account%40your-project.iam.gserviceaccount.com"
+        ```
+        
+        **PENTING:**
+        - Gunakan triple quotes `'''` untuk private_key
+        - Jangan tambahkan `\\n`, gunakan line breaks asli
+        - Pastikan tidak ada spasi ekstra di awal/akhir
+        
+        ### 6️⃣ Test Connection
+        
+        Klik tombol **Connect to Google Sheets** di bawah!
+        """)
+    
+    # Debug info
+    with st.expander("🔧 Debug - Credentials Status"):
+        st.write("**Secrets Configuration Status:**")
+        
+        if "gcp_service_account" in st.secrets:
+            st.success("✅ Service Account config found!")
             try:
-                # Validate credentials based on environment
-                if is_cloud:
-                    # Cloud requires service account
-                    if "gcp_service_account" not in st.secrets:
-                        st.error("❌ Service Account tidak ditemukan!")
-                        st.error(
-                            "Di Streamlit Cloud, kamu WAJIB menggunakan Service Account.\n\n"
-                            "Langkah-langkah:\n"
-                            "1. Buat Service Account di Google Cloud Console\n"
-                            "2. Download JSON key file\n"
-                            "3. Copy isi JSON ke Streamlit Cloud Secrets dengan key `gcp_service_account`\n"
-                            "4. Share Google Sheets ke service account email\n\n"
-                            "📖 Baca STREAMLIT_CLOUD_SETUP.md untuk panduan lengkap"
-                        )
-                        st.stop()
+                sa_email = st.secrets['gcp_service_account']['client_email']
+                st.write(f"**Service Account Email:** `{sa_email}`")
+                st.info("⚠️ PENTING: Pastikan semua Google Sheets sudah di-share ke email ini dengan akses Viewer!")
+                
+                # Check required fields
+                required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 
+                                 'client_email', 'client_id', 'token_uri']
+                missing_fields = [field for field in required_fields 
+                                if field not in st.secrets['gcp_service_account']]
+                
+                if missing_fields:
+                    st.error(f"❌ Missing fields: {', '.join(missing_fields)}")
                 else:
-                    # Local can use either
-                    if "gcp_service_account" not in st.secrets and "oauth" not in st.secrets:
-                        st.error("⚠️ Tidak ada credentials yang dikonfigurasi!")
-                        st.info("Tambahkan 'gcp_service_account' atau 'oauth' di .streamlit/secrets.toml")
-                        st.stop()
-
-                with st.spinner("Connecting to Google Sheets..."):
-                    st.session_state.creds = get_credentials()
-                    st.session_state.authenticated = True
-                st.success("✅ Connected!")
-                st.rerun()
-
+                    st.success("✅ All required fields present")
+                    
+                # Check private key format
+                pk = st.secrets['gcp_service_account']['private_key']
+                if '-----BEGIN PRIVATE KEY-----' in pk and '-----END PRIVATE KEY-----' in pk:
+                    st.success("✅ Private key format looks good")
+                else:
+                    st.error("❌ Private key format error - harus ada BEGIN dan END markers")
+                    
             except Exception as e:
-                st.error(f"❌ Connection gagal!")
-                st.error(str(e))
-
-                # Show helpful message
-                if is_cloud:
-                    st.info(
-                        "💡 Tips untuk Streamlit Cloud:\n"
-                        "- Pastikan Service Account sudah dibuat\n"
-                        "- Pastikan secrets.toml di Cloud berisi `[gcp_service_account]`\n"
-                        "- Pastikan Google Sheets sudah dishare ke service account email\n"
-                        "- Cek debug panel di atas untuk info lebih detail"
-                    )
-                else:
-                    st.info("Cek debug panel di atas untuk memastikan credentials sudah dikonfigurasi dengan benar.")
+                st.error(f"❌ Error checking config: {e}")
+        else:
+            st.error("❌ Service Account config NOT found!")
+            st.write("Tambahkan `[gcp_service_account]` di Streamlit Cloud Secrets")
+            st.write("Path: Settings > Secrets di Streamlit Cloud dashboard")
+    
+    if st.button("🔐 Connect to Google Sheets", type="primary"):
+        try:
+            with st.spinner("Connecting to Google Sheets..."):
+                st.session_state.creds = get_credentials()
+                
+                # Test connection
+                client = gspread.authorize(st.session_state.creds)
+                
+                st.session_state.authenticated = True
+            
+            st.success("✅ Connected successfully!")
+            st.balloons()
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"❌ Connection failed!")
+            st.error(str(e))
+            
+            st.info(
+                "💡 Troubleshooting Tips:\n\n"
+                "1. Pastikan Service Account sudah dibuat di Google Cloud Console\n"
+                "2. Pastikan Google Sheets API sudah di-enable\n"
+                "3. Pastikan semua Google Sheets sudah di-share ke service account email\n"
+                "4. Pastikan format secrets.toml benar (lihat contoh di atas)\n"
+                "5. Pastikan private_key menggunakan triple quotes dan tanpa \\n\n"
+                "Cek debug panel di atas untuk detail lebih lanjut."
+            )
     
     st.stop()
 
@@ -385,7 +284,7 @@ with st.sidebar:
         help="Pilih satu atau lebih assignment untuk dianalisis"
     )
     
-    # View mode for single assignment
+    # View mode for multiple assignments
     if len(selected_assignments) == 1:
         view_mode = "single"
     else:
@@ -398,14 +297,20 @@ with st.sidebar:
     st.divider()
     
     # Refresh button
-    if st.button("Refresh Data", use_container_width=True):
+    if st.button("🔄 Refresh Data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
     
     st.divider()
     
-    st.success("Logged In")
+    # Show connection status
+    st.success("✅ Connected")
     
+    # Logout button
+    if st.button("🚪 Logout", use_container_width=True):
+        st.session_state.authenticated = False
+        st.session_state.creds = None
+        st.rerun()
 
 @st.cache_data(ttl=300)
 def load_data_from_gsheet(_creds, sheet_url):
@@ -435,12 +340,20 @@ def load_multiple_sheets(creds, assignments):
     """Load data from multiple sheets"""
     all_data = {}
     
-    for assignment in assignments:
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for idx, assignment in enumerate(assignments):
+        status_text.text(f"Loading {assignment}...")
         sheet_url = SHEETS_CONFIG[assignment]
         df = load_data_from_gsheet(creds, sheet_url)
         if df is not None:
-            df['Assignment'] = assignment  # Add assignment column
+            df['Assignment'] = assignment
             all_data[assignment] = df
+        progress_bar.progress((idx + 1) / len(assignments))
+    
+    progress_bar.empty()
+    status_text.empty()
     
     return all_data
 
@@ -459,8 +372,8 @@ def calculate_metrics(df):
     # Basic metrics
     metrics['total_submissions'] = len(df)
     metrics['unique_students'] = df['NRP'].nunique()
-    metrics['pass_rate'] = (df['Status'] == 'Lulus').sum() / len(df) * 100
-    metrics['avg_score'] = df['Nilai'].mean()
+    metrics['pass_rate'] = (df['Status'] == 'Lulus').sum() / len(df) * 100 if len(df) > 0 else 0
+    metrics['avg_score'] = df['Nilai'].mean() if len(df) > 0 else 0
     
     # Student-level metrics
     student_stats = df.groupby('NRP').agg({
@@ -471,7 +384,7 @@ def calculate_metrics(df):
     
     metrics['students_passed'] = student_stats['passed'].sum()
     metrics['students_not_passed'] = len(student_stats) - metrics['students_passed']
-    metrics['avg_attempts'] = student_stats['attempts'].mean()
+    metrics['avg_attempts'] = student_stats['attempts'].mean() if len(student_stats) > 0 else 0
     metrics['student_stats'] = student_stats
     
     return metrics
@@ -511,6 +424,7 @@ def plot_submission_timeline(df):
     return fig
 
 def plot_pass_rate_by_student(df):
+    """Plot pass rate by student"""
     student_pass = df.groupby('NRP').agg({
         'Status': lambda x: (x == 'Lulus').sum() / len(x) * 100
     }).reset_index()
@@ -534,11 +448,10 @@ def plot_pass_rate_by_student(df):
     fig.update_layout(
         xaxis_title='Pass Rate (%)',
         yaxis_title='NRP',
-        height=1200,
+        height=max(400, len(student_pass) * 20),
         margin=dict(l=200)
     )
     return fig
-
 
 def plot_submission_heatmap(df):
     """Plot submission heatmap by hour and day"""
@@ -563,10 +476,8 @@ def plot_submission_heatmap(df):
 
 def plot_attempts_before_pass(df):
     """Plot number of attempts before passing"""
-    # Get first passing submission for each student
     passed_students = df[df['Status'] == 'Lulus'].groupby('NRP').first().reset_index()
     
-    # Count attempts before passing
     attempts_data = []
     for nrp in passed_students['NRP']:
         student_data = df[df['NRP'] == nrp].sort_values('Date')
@@ -594,7 +505,6 @@ def plot_score_progress(df, nrp):
     
     fig = go.Figure()
     
-    # Add score line
     fig.add_trace(go.Scatter(
         x=student_data['Date'],
         y=student_data['Nilai'],
@@ -604,7 +514,6 @@ def plot_score_progress(df, nrp):
         marker=dict(size=8)
     ))
     
-    # Add passing threshold line
     fig.add_hline(y=60, line_dash="dash", line_color="green", 
                   annotation_text="Batas Lulus (60)")
     
@@ -622,22 +531,19 @@ def predict_pass_probability(df, nrp):
     student_data = df[df['NRP'] == nrp].sort_values('Date')
     
     if len(student_data) < 2:
-        return 50.0  # Not enough data
+        return 50.0
     
-    # Calculate trend
     scores = student_data['Nilai'].values
     attempts = np.arange(len(scores))
     
-    # Linear regression
     if len(scores) > 1:
         slope = np.polyfit(attempts, scores, 1)[0]
         avg_score = scores.mean()
         last_score = scores[-1]
         
-        # Simple heuristic
         if last_score >= 60:
             return 100.0
-        elif slope > 5:  # Improving trend
+        elif slope > 5:
             return min(95.0, 50 + slope * 5)
         elif slope > 0:
             return min(70.0, 40 + avg_score / 2)
@@ -649,10 +555,12 @@ def predict_pass_probability(df, nrp):
 # Main content based on selected page
 if selected_assignments:
     # Load data for selected assignments
-    all_data = load_multiple_sheets(st.session_state.creds, selected_assignments)
+    with st.spinner("Loading data from Google Sheets..."):
+        all_data = load_multiple_sheets(st.session_state.creds, selected_assignments)
     
     if not all_data:
-        st.error("Tidak ada data yang berhasil dimuat")
+        st.error("❌ Tidak ada data yang berhasil dimuat")
+        st.info("Pastikan:\n1. Google Sheets sudah di-share ke service account email\n2. Sheet memiliki data yang valid\n3. Format data sesuai (kolom: NRP, Date, Nilai, Status)")
         st.stop()
     
     # Determine which dataframe to use
@@ -664,7 +572,6 @@ if selected_assignments:
             df = combine_dataframes(all_data)
             current_assignment = "Combined View"
         else:
-            # For individual view, let user select one
             current_assignment = st.selectbox(
                 "Lihat assignment:",
                 selected_assignments
@@ -673,7 +580,7 @@ if selected_assignments:
     
     if df is not None and not df.empty:
         # Show current view info
-        st.info(f"Viewing: **{current_assignment}** | Total Records: **{len(df)}**")
+        st.info(f"📊 Viewing: **{current_assignment}** | Total Records: **{len(df):,}** | Last Updated: **{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}**")
         
         metrics = calculate_metrics(df)
         
@@ -681,7 +588,6 @@ if selected_assignments:
         if page == "Overview":
             st.header("📊 Overview Dashboard")
             
-            # Key metrics
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -714,7 +620,6 @@ if selected_assignments:
             
             st.divider()
             
-            # Charts
             col1, col2 = st.columns(2)
             
             with col1:
@@ -723,8 +628,7 @@ if selected_assignments:
             with col2:
                 st.plotly_chart(plot_submission_timeline(df), use_container_width=True)
             
-            # Student status
-            st.subheader("Status Mahasiswa")
+            st.subheader("👥 Status Mahasiswa")
             col1, col2 = st.columns(2)
             
             with col1:
@@ -742,11 +646,10 @@ if selected_assignments:
                 st.metric("Mahasiswa Belum Lulus", metrics['students_not_passed'])
                 st.metric("Rata-rata Attempt", f"{metrics['avg_attempts']:.1f}")
         
-        # PAGE: MONITORING REAL-TIME
+        # PAGE: SUBMISSION HISTORY
         elif page == "Submission History":
             st.header("📈 Submission History")
             
-            # Leaderboard
             st.subheader("🏆 Leaderboard")
             
             leaderboard = df.groupby('NRP').agg({
@@ -758,16 +661,15 @@ if selected_assignments:
                 ['Nilai Tertinggi', 'Last Submission'],
                 ascending=[False, True]
             ).reset_index(drop=True)
+            leaderboard.index += 1
 
             st.dataframe(
-                leaderboard[['NRP', 'Nilai Tertinggi', 'Last Submission']],
-                use_container_width=True,
-                hide_index=True
+                leaderboard,
+                use_container_width=True
             )
             
             st.divider()
             
-            # Alert: Students need help
             st.subheader("⚠️ Mahasiswa yang Perlu Perhatian")
             
             need_help = metrics['student_stats'][
@@ -776,22 +678,20 @@ if selected_assignments:
             ]
             
             if len(need_help) > 0:
-                st.warning(f"Ada {len(need_help)} mahasiswa dengan 3+ attempt tapi belum lulus")
-                st.dataframe(need_help[['NRP', 'attempts', 'max_score']], use_container_width=True)
+                st.warning(f"⚠️ Ada {len(need_help)} mahasiswa dengan 3+ attempt tapi belum lulus")
+                st.dataframe(need_help[['NRP', 'attempts', 'max_score']], use_container_width=True, hide_index=True)
             else:
-                st.success("Tidak ada mahasiswa yang perlu perhatian khusus")
+                st.success("✅ Tidak ada mahasiswa yang perlu perhatian khusus")
         
         # PAGE: ANALISIS PERFORMA
         elif page == "Analisis Performa":
             st.header("👤 Analisis Performa Mahasiswa")
             
-            # Select student
             student_list = sorted(df['NRP'].unique())
             selected_student = st.selectbox("Pilih Mahasiswa:", student_list)
             
             student_df = df[df['NRP'] == selected_student].sort_values('Date')
             
-            # Student metrics
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -805,20 +705,18 @@ if selected_assignments:
             
             with col4:
                 passed = (student_df['Status'] == 'Lulus').any()
-                st.metric("Status", "Lulus" if passed else "Belum Lulus")
+                st.metric("Status", "✅ Lulus" if passed else "❌ Belum Lulus")
             
             st.divider()
             
-            # Score progress chart
             st.plotly_chart(plot_score_progress(df, selected_student), use_container_width=True)
             
             st.divider()
             
-            # Detailed submission history
             col1, col2 = st.columns([2, 1])
             
             with col1:
-                st.subheader("Riwayat Submission")
+                st.subheader("📝 Riwayat Submission")
                 display_df = student_df[['Date', 'Nilai', 'Status']].copy()
                 display_df['Date'] = display_df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
@@ -826,7 +724,6 @@ if selected_assignments:
             with col2:
                 st.subheader("📊 Statistik")
                 
-                # Calculate improvement
                 if len(student_df) > 1:
                     first_score = student_df['Nilai'].iloc[0]
                     last_score = student_df['Nilai'].iloc[-1]
@@ -835,13 +732,11 @@ if selected_assignments:
                     st.metric("Peningkatan", f"{improvement:+.0f}", 
                              delta=f"{improvement:+.0f} poin")
                 
-                # Time between attempts
                 if len(student_df) > 1:
                     time_diffs = student_df['Date'].diff().dt.total_seconds() / 3600
                     avg_time = time_diffs.mean()
                     st.metric("Rata-rata Jeda", f"{avg_time:.1f} jam")
                 
-                # Passing attempt
                 if passed:
                     first_pass_idx = student_df[student_df['Status'] == 'Lulus'].index[0]
                     attempt_to_pass = list(student_df.index).index(first_pass_idx) + 1
@@ -849,29 +744,29 @@ if selected_assignments:
         
         # PAGE: PATTERN SUBMISSION
         elif page == "Pattern Submission":
-            st.header("Pattern & Analisis Waktu Submission")
+            st.header("📊 Pattern & Analisis Waktu Submission")
             
-            # Heatmap
-            st.subheader("Heatmap Waktu Submission")
+            st.subheader("🔥 Heatmap Waktu Submission")
             st.plotly_chart(plot_submission_heatmap(df.copy()), use_container_width=True)
             
             st.divider()
             
-            # Peak hours
             col1, col2 = st.columns(2)
             
             with col1:
-                st.subheader("Jam Tersibuk")
+                st.subheader("⏰ Jam Tersibuk")
                 hourly = df.groupby(df['Date'].dt.hour).size().reset_index()
                 hourly.columns = ['Hour', 'Count']
                 hourly = hourly.sort_values('Count', ascending=False).head(5)
                 
                 fig = px.bar(hourly, x='Hour', y='Count', 
-                           title='Top 5 Jam Tersibuk')
+                           title='Top 5 Jam Tersibuk',
+                           color='Count',
+                           color_continuous_scale='Blues')
                 st.plotly_chart(fig, use_container_width=True)
             
             with col2:
-                st.subheader("Hari Tersibuk")
+                st.subheader("📅 Hari Tersibuk")
                 daily = df.groupby(df['Date'].dt.day_name()).size().reset_index()
                 daily.columns = ['Day', 'Count']
                 
@@ -881,13 +776,14 @@ if selected_assignments:
                 daily = daily.sort_values('Day')
                 
                 fig = px.bar(daily, x='Day', y='Count',
-                           title='Submission per Hari')
+                           title='Submission per Hari',
+                           color='Count',
+                           color_continuous_scale='Greens')
                 st.plotly_chart(fig, use_container_width=True)
             
             st.divider()
             
-            # Attempts analysis
-            st.subheader("Analisis Jumlah Attempt")
+            st.subheader("🎯 Analisis Jumlah Attempt")
             
             col1, col2 = st.columns(2)
             
@@ -895,7 +791,6 @@ if selected_assignments:
                 st.plotly_chart(plot_attempts_before_pass(df), use_container_width=True)
             
             with col2:
-                # Success rate by attempt number
                 df['attempt_number'] = df.groupby('NRP').cumcount() + 1
                 success_by_attempt = df.groupby('attempt_number').agg({
                     'Status': lambda x: (x == 'Lulus').sum() / len(x) * 100
@@ -906,22 +801,17 @@ if selected_assignments:
                             title='Success Rate per Attempt',
                             markers=True)
                 st.plotly_chart(fig, use_container_width=True)
-            
-            st.divider()
+        
         # PAGE: DASHBOARD DOSEN
         elif page == "Dashboard Dosen":
-            st.header("Dashboard Pengajar")
+            st.header("👨‍🏫 Dashboard Pengajar")
             
-            # Class overview
             st.subheader("📊 Overview Kelas")
             
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric(
-                    "Total Mahasiswa",
-                    metrics['unique_students']
-                )
+                st.metric("Total Mahasiswa", metrics['unique_students'])
             
             with col2:
                 st.metric(
@@ -931,16 +821,10 @@ if selected_assignments:
                 )
             
             with col3:
-                st.metric(
-                    "Belum Lulus",
-                    metrics['students_not_passed']
-                )
+                st.metric("Belum Lulus", metrics['students_not_passed'])
             
             with col4:
-                st.metric(
-                    "Avg Attempt/Student",
-                    f"{metrics['avg_attempts']:.1f}"
-                )
+                st.metric("Avg Attempt/Student", f"{metrics['avg_attempts']:.1f}")
             
             st.divider()
             
@@ -948,10 +832,8 @@ if selected_assignments:
             
             st.divider()
             
-            # Performance trends
             st.subheader("📈 Trend Performa Kelas")
             
-            # Daily pass rate
             daily_stats = df.groupby(df['Date'].dt.date).agg({
                 'Status': lambda x: (x == 'Lulus').sum() / len(x) * 100,
                 'Nilai': 'mean'
@@ -981,12 +863,11 @@ if selected_assignments:
             
             st.divider()
             
-            # Detailed student table
             st.subheader("📋 Detail Semua Mahasiswa")
             
             student_detail = metrics['student_stats'].copy()
             student_detail['Status'] = student_detail['passed'].apply(
-                lambda x: 'Lulus' if x else 'Belum Lulus'
+                lambda x: '✅ Lulus' if x else '❌ Belum Lulus'
             )
             student_detail = student_detail.sort_values('max_score', ascending=False)
             
@@ -998,12 +879,11 @@ if selected_assignments:
         
         # PAGE: PREDICTIVE ANALYTICS
         elif page == "Predictive Analytics":
-            st.header("Predictive Analytics")
+            st.header("🔮 Predictive Analytics")
             
             st.info("📊 Analisis prediktif menggunakan pattern dari data historis")
             
-            # Predict pass probability for each student
-            st.subheader("Probabilitas Kelulusan per Mahasiswa")
+            st.subheader("📈 Probabilitas Kelulusan per Mahasiswa")
             
             predictions = []
             for nrp in df['NRP'].unique():
@@ -1016,13 +896,12 @@ if selected_assignments:
                     'Probability': prob,
                     'Attempts': len(student_data),
                     'Max Score': student_data['Nilai'].max(),
-                    'Status': 'Lulus' if passed else 'Belum Lulus'
+                    'Status': '✅ Lulus' if passed else '❌ Belum Lulus'
                 })
             
             pred_df = pd.DataFrame(predictions)
             pred_df = pred_df.sort_values('Probability', ascending=False)
             
-            # Color code based on probability
             def get_risk_color(prob):
                 if prob >= 70:
                     return '🟢 Low Risk'
@@ -1033,7 +912,6 @@ if selected_assignments:
             
             pred_df['Risk Category'] = pred_df['Probability'].apply(get_risk_color)
             
-            # Visualize predictions
             fig = px.bar(
                 pred_df,
                 x='NRP',
@@ -1050,25 +928,23 @@ if selected_assignments:
             
             st.divider()
             
-            # Detailed prediction table
             st.subheader("📋 Detail Prediksi")
             
-            # Filter options
             filter_option = st.radio(
                 "Filter:",
                 ["Semua", "High Risk Only", "Belum Lulus Only"]
             )
             
+            filtered_pred = pred_df.copy()
             if filter_option == "High Risk Only":
-                pred_df = pred_df[pred_df['Risk Category'] == '🔴 High Risk']
+                filtered_pred = filtered_pred[filtered_pred['Risk Category'] == '🔴 High Risk']
             elif filter_option == "Belum Lulus Only":
-                pred_df = pred_df[pred_df['Status'] == 'Belum Lulus']
+                filtered_pred = filtered_pred[filtered_pred['Status'] == '❌ Belum Lulus']
             
-            st.dataframe(pred_df, use_container_width=True, hide_index=True)
+            st.dataframe(filtered_pred, use_container_width=True, hide_index=True)
             
             st.divider()
             
-            # Score prediction model
             st.subheader("📈 Prediksi Nilai Next Attempt")
             
             selected_student = st.selectbox(
@@ -1082,13 +958,12 @@ if selected_assignments:
                 scores = student_history['Nilai'].values
                 attempts = np.arange(len(scores))
                 
-                # Simple linear extrapolation
                 z = np.polyfit(attempts, scores, 1)
                 p = np.poly1d(z)
                 
                 next_attempt = len(scores)
                 predicted_score = p(next_attempt)
-                predicted_score = max(0, min(100, predicted_score))  # Bound between 0-100
+                predicted_score = max(0, min(100, predicted_score))
                 
                 col1, col2 = st.columns(2)
                 
@@ -1100,12 +975,11 @@ if selected_assignments:
                     )
                     
                     if predicted_score >= 60:
-                        st.success("Diprediksi akan lulus di attempt berikutnya!")
+                        st.success("✅ Diprediksi akan lulus di attempt berikutnya!")
                     else:
-                        st.warning("Mungkin perlu attempt tambahan")
+                        st.warning("⚠️ Mungkin perlu attempt tambahan")
                 
                 with col2:
-                    # Plot with prediction
                     fig = go.Figure()
                     
                     fig.add_trace(go.Scatter(
@@ -1116,7 +990,6 @@ if selected_assignments:
                         marker=dict(size=10, color='blue')
                     ))
                     
-                    # Trend line
                     fig.add_trace(go.Scatter(
                         x=np.arange(0, next_attempt + 2),
                         y=p(np.arange(0, next_attempt + 2)),
@@ -1125,7 +998,6 @@ if selected_assignments:
                         line=dict(dash='dash', color='gray')
                     ))
                     
-                    # Predicted point
                     fig.add_trace(go.Scatter(
                         x=[next_attempt + 1],
                         y=[predicted_score],
@@ -1142,7 +1014,7 @@ if selected_assignments:
                     
                     st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("Tidak cukup data untuk membuat prediksi (minimal 2 attempt)")
+                st.info("ℹ️ Tidak cukup data untuk membuat prediksi (minimal 2 attempt)")
         
         # PAGE: CUSTOM ANALYTICS
         elif page == "Custom Analytics":
@@ -1150,7 +1022,6 @@ if selected_assignments:
             
             st.info("💡 Buat analisis custom dan export data sesuai kebutuhan")
             
-            # Custom filters
             st.subheader("🔍 Custom Filters")
             
             col1, col2, col3 = st.columns(3)
@@ -1172,7 +1043,6 @@ if selected_assignments:
                     value=(df['Date'].min(), df['Date'].max())
                 )
             
-            # Apply filters
             filtered_df = df[
                 (df['Status'].isin(status_filter)) &
                 (df['Nilai'] >= min_score) &
@@ -1185,11 +1055,10 @@ if selected_assignments:
                     (filtered_df['Date'].dt.date <= date_range[1])
                 ]
             
-            st.success(f"{len(filtered_df)} records setelah filtering")
+            st.success(f"✅ {len(filtered_df)} records setelah filtering")
             
             st.divider()
             
-            # Custom visualizations
             st.subheader("📊 Custom Visualizations")
             
             viz_type = st.selectbox(
@@ -1236,13 +1105,11 @@ if selected_assignments:
             
             st.divider()
             
-            # Export options
             st.subheader("📥 Export Data")
             
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                # Export filtered data
                 csv = filtered_df.to_csv(index=False)
                 st.download_button(
                     label="📄 Download Filtered Data (CSV)",
@@ -1252,7 +1119,6 @@ if selected_assignments:
                 )
             
             with col2:
-                # Export summary statistics
                 summary = metrics['student_stats'].to_csv(index=False)
                 st.download_button(
                     label="📊 Download Summary Stats (CSV)",
@@ -1262,7 +1128,6 @@ if selected_assignments:
                 )
             
             with col3:
-                # Export full data
                 full_csv = df.to_csv(index=False)
                 st.download_button(
                     label="💾 Download Full Dataset (CSV)",
@@ -1273,11 +1138,9 @@ if selected_assignments:
             
             st.divider()
             
-            # Raw data view
             st.subheader("📋 Filtered Data Preview")
             st.dataframe(filtered_df, use_container_width=True)
             
-            # Statistics of filtered data
             st.subheader("📈 Statistics (Filtered Data)")
             
             col1, col2, col3, col4 = st.columns(4)
@@ -1292,12 +1155,12 @@ if selected_assignments:
                 st.metric("Avg Score", f"{filtered_df['Nilai'].mean():.1f}")
             
             with col4:
-                pass_rate = (filtered_df['Status'] == 'Lulus').sum() / len(filtered_df) * 100
+                pass_rate = (filtered_df['Status'] == 'Lulus').sum() / len(filtered_df) * 100 if len(filtered_df) > 0 else 0
                 st.metric("Pass Rate", f"{pass_rate:.1f}%")
         
         # PAGE: COMPARE ASSIGNMENTS
         elif page == "Compare Assignments":
-            st.header("Compare Assignments")
+            st.header("🔄 Compare Assignments")
             
             if len(selected_assignments) < 2:
                 st.warning("⚠️ Pilih minimal 2 assignments di sidebar untuk membandingkan")
@@ -1305,7 +1168,6 @@ if selected_assignments:
             
             st.info(f"📊 Membandingkan {len(selected_assignments)} assignments")
             
-            # Compare metrics across assignments
             st.subheader("📊 Perbandingan Metrics")
             
             comparison_data = []
@@ -1324,16 +1186,13 @@ if selected_assignments:
             
             comparison_df = pd.DataFrame(comparison_data)
             
-            # Display comparison table
             st.dataframe(comparison_df, use_container_width=True, hide_index=True)
             
             st.divider()
             
-            # Visualizations
             col1, col2 = st.columns(2)
             
             with col1:
-                # Pass rate comparison
                 fig = px.bar(
                     comparison_df,
                     x='Assignment',
@@ -1346,7 +1205,6 @@ if selected_assignments:
                 st.plotly_chart(fig, use_container_width=True)
             
             with col2:
-                # Average score comparison
                 fig = px.bar(
                     comparison_df,
                     x='Assignment',
@@ -1360,10 +1218,8 @@ if selected_assignments:
             
             st.divider()
             
-            # Student performance across assignments
             st.subheader("👥 Performa Mahasiswa Across Assignments")
             
-            # Get common students
             all_students = set()
             for df_temp in all_data.values():
                 all_students.update(df_temp['NRP'].unique())
@@ -1377,7 +1233,7 @@ if selected_assignments:
                         max_score = student_data['Nilai'].max()
                         passed = (student_data['Status'] == 'Lulus').any()
                         student_row[f"{assignment_name} - Score"] = max_score
-                        student_row[f"{assignment_name} - Status"] = 'Lulus' if passed else 'Belum Lulus'
+                        student_row[f"{assignment_name} - Status"] = '✅' if passed else '❌'
                     else:
                         student_row[f"{assignment_name} - Score"] = '-'
                         student_row[f"{assignment_name} - Status"] = '-'
@@ -1386,28 +1242,24 @@ if selected_assignments:
             
             student_comparison_df = pd.DataFrame(student_comparison)
             
-            # Calculate total passed
             status_cols = [col for col in student_comparison_df.columns if 'Status' in col]
             student_comparison_df['Total Passed'] = student_comparison_df[status_cols].apply(
-                lambda row: sum(1 for x in row if x == 'Lulus'),
+                lambda row: sum(1 for x in row if x == '✅'),
                 axis=1
             )
             
-            # Sort by total passed
             student_comparison_df = student_comparison_df.sort_values('Total Passed', ascending=False)
             
             st.dataframe(student_comparison_df, use_container_width=True, hide_index=True)
             
             st.divider()
             
-            # Difficulty analysis
             st.subheader("📈 Analisis Kesulitan Assignment")
             
             difficulty_metrics = []
             for assignment_name, assignment_df in all_data.items():
                 metrics_temp = calculate_metrics(assignment_df)
                 
-                # Calculate difficulty score (lower pass rate + higher attempts = harder)
                 difficulty_score = (100 - metrics_temp['pass_rate']) + (metrics_temp['avg_attempts'] * 10)
                 
                 difficulty_metrics.append({
@@ -1421,7 +1273,6 @@ if selected_assignments:
             difficulty_df = pd.DataFrame(difficulty_metrics)
             difficulty_df = difficulty_df.sort_values('Difficulty Score', ascending=False)
             
-            # Add difficulty label
             def get_difficulty_label(score):
                 if score >= 80:
                     return '🔴 Very Hard'
@@ -1458,7 +1309,6 @@ if selected_assignments:
             
             st.divider()
             
-            # Score distribution comparison
             st.subheader("📊 Distribusi Nilai Comparison")
             
             combined_for_dist = combine_dataframes(all_data)
@@ -1474,13 +1324,12 @@ if selected_assignments:
             st.plotly_chart(fig, use_container_width=True)
     
     else:
-        st.error("Data tidak dapat dimuat atau kosong")
+        st.error("❌ Data tidak dapat dimuat atau kosong")
         st.info("Pastikan Google Sheets URL benar dan kamu punya akses ke sheet tersebut")
 
 else:
-    st.info("Pilih assignment di sidebar untuk memulai")
+    st.info("ℹ️ Pilih assignment di sidebar untuk memulai")
     
-    # Show available assignments
     with st.expander("📚 Available Assignments"):
         for assignment_name in SHEETS_CONFIG.keys():
             st.markdown(f"- **{assignment_name}**")
