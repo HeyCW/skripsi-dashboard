@@ -5,6 +5,7 @@ import gspread
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 import pickle
 import os
 import plotly.express as px
@@ -12,6 +13,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import warnings
+import json
 warnings.filterwarnings('ignore')
 
 # Page config
@@ -62,20 +64,8 @@ st.markdown("""
 # --- CONFIG ---
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
 
-# Auto-detect credentials path
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
-
-# Try multiple possible paths for flexibility
-def find_file(possible_paths):
-    """Find first existing file from list of paths"""
-    for path in possible_paths:
-        if os.path.exists(path):
-            return path
-    return possible_paths[0]  # Return first as default
-
-# Possible token file locations
-TOKEN_FILE = "../credentials/token.pickle"
-CREDENTIALS_FILE = "../credentials/client_secret_275019410487-13eb4vpan7ut13a2tbbol4gggpce3cr3.apps.googleusercontent.com.json"
+# Token file location (untuk menyimpan token hasil OAuth)
+TOKEN_FILE = "./credentials/token.pickle"
 
 
 # Multiple Sheets Configuration
@@ -90,30 +80,71 @@ SHEETS_CONFIG = {
 }
 
 def get_credentials():
-    """Get valid user credentials from storage or run OAuth flow"""
+    """Get valid user credentials - supports both Service Account and OAuth"""
+
+    # Method 1: Try Service Account (for Streamlit Cloud)
+    if "gcp_service_account" in st.secrets:
+        try:
+            credentials_dict = dict(st.secrets["gcp_service_account"])
+            creds = service_account.Credentials.from_service_account_info(
+                credentials_dict,
+                scopes=SCOPES
+            )
+            return creds
+        except Exception as e:
+            st.warning(f"Service account gagal: {e}. Mencoba OAuth...")
+
+    # Method 2: Try OAuth (for local development)
     creds = None
-    
+
+    # Load existing token if available
     if os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE, 'rb') as token:
             creds = pickle.load(token)
-    
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists(CREDENTIALS_FILE):
-                raise FileNotFoundError(
-                    f"File '{CREDENTIALS_FILE}' tidak ditemukan. "
-                    "Download OAuth2 credentials dari Google Cloud Console."
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                st.warning(f"Token refresh gagal: {e}")
+                creds = None
+
+        if not creds:
+            # Create credentials config from Streamlit secrets
+            try:
+                if "oauth" not in st.secrets:
+                    raise Exception(
+                        "Tidak ada credentials yang tersedia!\n"
+                        "Tambahkan 'gcp_service_account' (untuk Cloud) atau 'oauth' (untuk lokal) di secrets.toml"
+                    )
+
+                client_config = {
+                    "installed": {
+                        "client_id": st.secrets["oauth"]["client_id"],
+                        "project_id": st.secrets["oauth"]["project_id"],
+                        "auth_uri": st.secrets["oauth"]["auth_uri"],
+                        "token_uri": st.secrets["oauth"]["token_uri"],
+                        "auth_provider_x509_cert_url": st.secrets["oauth"]["auth_provider_x509_cert_url"],
+                        "client_secret": st.secrets["oauth"]["client_secret"],
+                        "redirect_uris": st.secrets["oauth"]["redirect_uris"]
+                    }
+                }
+
+                flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+                creds = flow.run_local_server(port=0)
+
+                # Save token untuk reuse
+                os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
+                with open(TOKEN_FILE, 'wb') as token:
+                    pickle.dump(creds, token)
+
+            except KeyError as e:
+                raise Exception(
+                    f"OAuth credentials tidak lengkap di Streamlit secrets. Missing: {e}\n"
+                    "Pastikan semua field oauth sudah diisi di .streamlit/secrets.toml"
                 )
-            
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        
-        with open(TOKEN_FILE, 'wb') as token:
-            pickle.dump(creds, token)
-    
+
     return creds
 
 # Initialize authentication
@@ -152,54 +183,94 @@ if not st.session_state.authenticated:
     else:
         # No token exists, show login button
         st.warning("⚠️ Kamu perlu login dengan Google account untuk akses Google Sheets")
-        
+
         # Show setup instructions
         with st.expander("📖 Setup Instructions"):
             st.markdown("""
-            **Untuk menggunakan dashboard ini:**
-            
-            1. **Download OAuth2 Credentials** dari Google Cloud Console
-            2. **Rename file** jadi `credentials.json`
-            3. **Simpan di folder `credentials/`** sejajar dengan script ini
-            
-            **Struktur folder yang benar:**
+            **Untuk menggunakan dashboard ini, pilih salah satu:**
+
+            ## 🔹 Option 1: Service Account (Recommended untuk Streamlit Cloud)
+
+            1. Buat Service Account di Google Cloud Console
+            2. Download JSON key file
+            3. Copy isi JSON ke Streamlit secrets dengan format:
+
+            ```toml
+            [gcp_service_account]
+            type = "service_account"
+            project_id = "your-project-id"
+            private_key_id = "your-private-key-id"
+            private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+            client_email = "your-service-account@project.iam.gserviceaccount.com"
+            client_id = "123456789"
+            auth_uri = "https://accounts.google.com/o/oauth2/auth"
+            token_uri = "https://oauth2.googleapis.com/token"
+            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+            client_x509_cert_url = "https://www.googleapis.com/..."
             ```
-            your_project/
-            ├── dashboard_analytics_multi.py
-            └── credentials/
-                └── credentials.json
+
+            4. **PENTING:** Share Google Sheets ke service account email!
+
+            ## 🔹 Option 2: OAuth (Untuk Development Lokal)
+
+            ```toml
+            [oauth]
+            client_id = "your-client-id"
+            project_id = "your-project-id"
+            auth_uri = "https://accounts.google.com/o/oauth2/auth"
+            token_uri = "https://oauth2.googleapis.com/token"
+            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+            client_secret = "your-client-secret"
+            redirect_uris = ["http://localhost"]
             ```
-            
-            Setelah login pertama kali, file `token.pickle` akan dibuat otomatis.
             """)
-        
+
         # Debug info
-        with st.expander("🔧 Debug - Path Info"):
-            st.write("**Current Paths:**")
-            st.code(f"Script Dir: {SCRIPT_DIR}")
-            st.code(f"Looking for token at: {TOKEN_FILE}")
-            st.code(f"Looking for credentials at: {CREDENTIALS_FILE}")
-            st.write("**Status:**")
-            st.write(f"Token exists: {'Yes' if os.path.exists(TOKEN_FILE) else 'No'} {TOKEN_FILE}")
-            st.write(f"Credentials exists: {'Yes' if os.path.exists(CREDENTIALS_FILE) else 'No'} {CREDENTIALS_FILE}")
-            
-            if not os.path.exists(CREDENTIALS_FILE):
-                st.error("File credentials.json tidak ditemukan!")
-                st.info("Letakkan file credentials.json di salah satu lokasi di atas")
-        
-        if st.button("Login dengan Google", type="primary"):
-            if not os.path.exists(CREDENTIALS_FILE):
-                st.error("Credentials file tidak ditemukan! Cek path di Debug info di atas.")
-            else:
+        with st.expander("🔧 Debug - Credentials Status"):
+            st.write("**Available Credentials:**")
+
+            # Check Service Account
+            if "gcp_service_account" in st.secrets:
+                st.success("✅ Service Account config ditemukan!")
                 try:
-                    with st.spinner("Membuka browser untuk login..."):
+                    st.write(f"Service Account Email: {st.secrets['gcp_service_account']['client_email']}")
+                except:
+                    pass
+            else:
+                st.warning("❌ Service Account tidak dikonfigurasi")
+
+            st.divider()
+
+            # Check OAuth
+            if "oauth" in st.secrets:
+                st.success("✅ OAuth config ditemukan!")
+                st.write("Keys available:", list(st.secrets["oauth"].keys()))
+            else:
+                st.warning("❌ OAuth config tidak dikonfigurasi")
+
+            st.divider()
+
+            # Check token file
+            st.write("**Token File Status:**")
+            st.write(f"Token exists: {'Yes ✅' if os.path.exists(TOKEN_FILE) else 'No ❌'}")
+            if os.path.exists(TOKEN_FILE):
+                st.write(f"Path: {TOKEN_FILE}")
+
+        if st.button("🔐 Connect to Google Sheets", type="primary"):
+            try:
+                # Check if any credential method is configured
+                if "gcp_service_account" not in st.secrets and "oauth" not in st.secrets:
+                    st.error("⚠️ Tidak ada credentials yang dikonfigurasi!")
+                    st.info("Tambahkan 'gcp_service_account' atau 'oauth' di .streamlit/secrets.toml")
+                else:
+                    with st.spinner("Connecting to Google Sheets..."):
                         st.session_state.creds = get_credentials()
                         st.session_state.authenticated = True
-                    st.success("Login berhasil!")
+                    st.success("✅ Connected!")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Login gagal: {e}")
-                    st.info("Pastikan file credentials JSON sudah ada di folder yang benar.")
+            except Exception as e:
+                st.error(f"❌ Connection gagal: {e}")
+                st.info("Cek debug panel di atas untuk memastikan credentials sudah dikonfigurasi dengan benar.")
     
     st.stop()
 
