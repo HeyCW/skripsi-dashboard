@@ -31,6 +31,12 @@ Dashboard interaktif untuk menganalisis performa mahasiswa berdasarkan data subm
 
 ## 🚀 Quick Start
 
+### ⚠️ Deploy ke Streamlit Cloud?
+
+**JANGAN pakai OAuth!** Di cloud harus pakai Service Account.
+
+👉 **Baca quick guide 5 menit:** [QUICK_SETUP_CLOUD.md](QUICK_SETUP_CLOUD.md)
+
 ### Local Development
 
 1. **Install dependencies:**
@@ -59,9 +65,13 @@ Dashboard interaktif untuk menganalisis performa mahasiswa berdasarkan data subm
 
 ### Streamlit Cloud Deployment
 
-Untuk deploy ke Streamlit Cloud, **gunakan Service Account** (bukan OAuth).
+**OAuth TIDAK BISA di cloud!** Error: `could not locate runnable browser`
 
-📖 **Baca panduan lengkap:** [STREAMLIT_CLOUD_SETUP.md](STREAMLIT_CLOUD_SETUP.md)
+**Solusi:** Gunakan Service Account
+
+📖 **Quick Guide (5 menit):** [QUICK_SETUP_CLOUD.md](QUICK_SETUP_CLOUD.md)
+
+📖 **Panduan lengkap:** [STREAMLIT_CLOUD_SETUP.md](STREAMLIT_CLOUD_SETUP.md)
 
 ## 📁 Project Structure
 

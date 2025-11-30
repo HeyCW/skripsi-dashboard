@@ -79,6 +79,13 @@ SHEETS_CONFIG = {
     "Big Data Assignment 3": "https://docs.google.com/spreadsheets/d/1AlnkwRg_6WU-zr5yreWPDkAPEXU_mzrBfIUIt2DXwzM/edit?gid=0#gid=0"
 }
 
+def is_cloud_environment():
+    """Detect if running on Streamlit Cloud"""
+    # Streamlit Cloud sets specific environment variables
+    return os.getenv("STREAMLIT_SHARING_MODE") is not None or \
+           not os.path.exists("/usr/bin") or \
+           os.getenv("HOSTNAME", "").startswith("streamlit")
+
 def get_credentials():
     """Get valid user credentials - supports both Service Account and OAuth"""
 
@@ -92,9 +99,22 @@ def get_credentials():
             )
             return creds
         except Exception as e:
-            st.warning(f"Service account gagal: {e}. Mencoba OAuth...")
+            raise Exception(f"Service account error: {e}")
 
-    # Method 2: Try OAuth (for local development)
+    # Method 2: OAuth (ONLY for local development)
+    # Detect if running on cloud - if yes, block OAuth attempt
+    if is_cloud_environment():
+        raise Exception(
+            "🚫 OAuth tidak bisa digunakan di Streamlit Cloud!\n\n"
+            "Kamu harus setup Service Account:\n"
+            "1. Buat Service Account di Google Cloud Console\n"
+            "2. Download JSON key\n"
+            "3. Tambahkan ke Streamlit Cloud Secrets dengan key 'gcp_service_account'\n"
+            "4. Share Google Sheets ke service account email\n\n"
+            "📖 Baca panduan lengkap di STREAMLIT_CLOUD_SETUP.md"
+        )
+
+    # OAuth flow for local development only
     creds = None
 
     # Load existing token if available
@@ -112,13 +132,13 @@ def get_credentials():
 
         if not creds:
             # Create credentials config from Streamlit secrets
-            try:
-                if "oauth" not in st.secrets:
-                    raise Exception(
-                        "Tidak ada credentials yang tersedia!\n"
-                        "Tambahkan 'gcp_service_account' (untuk Cloud) atau 'oauth' (untuk lokal) di secrets.toml"
-                    )
+            if "oauth" not in st.secrets:
+                raise Exception(
+                    "Tidak ada credentials yang tersedia!\n"
+                    "Tambahkan 'oauth' di .streamlit/secrets.toml untuk development lokal"
+                )
 
+            try:
                 client_config = {
                     "installed": {
                         "client_id": st.secrets["oauth"]["client_id"],
@@ -141,7 +161,7 @@ def get_credentials():
 
             except KeyError as e:
                 raise Exception(
-                    f"OAuth credentials tidak lengkap di Streamlit secrets. Missing: {e}\n"
+                    f"OAuth credentials tidak lengkap. Missing: {e}\n"
                     "Pastikan semua field oauth sudah diisi di .streamlit/secrets.toml"
                 )
 
@@ -182,7 +202,11 @@ if not st.session_state.authenticated:
                     st.info("Pastikan file credentials JSON sudah ada di folder yang benar.")
     else:
         # No token exists, show login button
-        st.warning("⚠️ Kamu perlu login dengan Google account untuk akses Google Sheets")
+        st.warning("⚠️ Kamu perlu setup credentials untuk akses Google Sheets")
+
+        # Show environment info
+        env_type = "☁️ Streamlit Cloud" if is_cloud_environment() else "💻 Local Development"
+        st.info(f"**Environment:** {env_type}")
 
         # Show setup instructions
         with st.expander("📖 Setup Instructions"):
@@ -227,50 +251,103 @@ if not st.session_state.authenticated:
 
         # Debug info
         with st.expander("🔧 Debug - Credentials Status"):
+            # Environment detection
+            is_cloud = is_cloud_environment()
+            st.write("**Environment Detection:**")
+            if is_cloud:
+                st.error("🌐 Running on Streamlit Cloud")
+                st.write("OAuth is DISABLED on cloud. You must use Service Account.")
+            else:
+                st.success("💻 Running Locally")
+                st.write("OAuth is available for local development.")
+
+            st.divider()
+
             st.write("**Available Credentials:**")
 
             # Check Service Account
             if "gcp_service_account" in st.secrets:
                 st.success("✅ Service Account config ditemukan!")
                 try:
-                    st.write(f"Service Account Email: {st.secrets['gcp_service_account']['client_email']}")
+                    sa_email = st.secrets['gcp_service_account']['client_email']
+                    st.write(f"**Service Account Email:** `{sa_email}`")
+                    st.info("⚠️ PENTING: Pastikan Google Sheets sudah dishare ke email ini!")
                 except:
                     pass
             else:
-                st.warning("❌ Service Account tidak dikonfigurasi")
-
-            st.divider()
-
-            # Check OAuth
-            if "oauth" in st.secrets:
-                st.success("✅ OAuth config ditemukan!")
-                st.write("Keys available:", list(st.secrets["oauth"].keys()))
-            else:
-                st.warning("❌ OAuth config tidak dikonfigurasi")
-
-            st.divider()
-
-            # Check token file
-            st.write("**Token File Status:**")
-            st.write(f"Token exists: {'Yes ✅' if os.path.exists(TOKEN_FILE) else 'No ❌'}")
-            if os.path.exists(TOKEN_FILE):
-                st.write(f"Path: {TOKEN_FILE}")
-
-        if st.button("🔐 Connect to Google Sheets", type="primary"):
-            try:
-                # Check if any credential method is configured
-                if "gcp_service_account" not in st.secrets and "oauth" not in st.secrets:
-                    st.error("⚠️ Tidak ada credentials yang dikonfigurasi!")
-                    st.info("Tambahkan 'gcp_service_account' atau 'oauth' di .streamlit/secrets.toml")
+                if is_cloud:
+                    st.error("❌ Service Account WAJIB untuk Streamlit Cloud!")
+                    st.write("Tambahkan `gcp_service_account` di Streamlit Cloud Secrets")
                 else:
-                    with st.spinner("Connecting to Google Sheets..."):
-                        st.session_state.creds = get_credentials()
-                        st.session_state.authenticated = True
-                    st.success("✅ Connected!")
-                    st.rerun()
+                    st.warning("❌ Service Account tidak dikonfigurasi (Optional untuk lokal)")
+
+            st.divider()
+
+            # Check OAuth (only show if local)
+            if not is_cloud:
+                if "oauth" in st.secrets:
+                    st.success("✅ OAuth config ditemukan!")
+                    st.write("Keys available:", list(st.secrets["oauth"].keys()))
+                else:
+                    st.warning("❌ OAuth config tidak dikonfigurasi")
+
+                st.divider()
+
+                # Check token file
+                st.write("**Token File Status:**")
+                st.write(f"Token exists: {'Yes ✅' if os.path.exists(TOKEN_FILE) else 'No ❌'}")
+                if os.path.exists(TOKEN_FILE):
+                    st.write(f"Path: {TOKEN_FILE}")
+
+        # Conditional button text based on environment
+        is_cloud = is_cloud_environment()
+        button_text = "🔐 Connect to Google Sheets"
+
+        if st.button(button_text, type="primary"):
+            try:
+                # Validate credentials based on environment
+                if is_cloud:
+                    # Cloud requires service account
+                    if "gcp_service_account" not in st.secrets:
+                        st.error("❌ Service Account tidak ditemukan!")
+                        st.error(
+                            "Di Streamlit Cloud, kamu WAJIB menggunakan Service Account.\n\n"
+                            "Langkah-langkah:\n"
+                            "1. Buat Service Account di Google Cloud Console\n"
+                            "2. Download JSON key file\n"
+                            "3. Copy isi JSON ke Streamlit Cloud Secrets dengan key `gcp_service_account`\n"
+                            "4. Share Google Sheets ke service account email\n\n"
+                            "📖 Baca STREAMLIT_CLOUD_SETUP.md untuk panduan lengkap"
+                        )
+                        st.stop()
+                else:
+                    # Local can use either
+                    if "gcp_service_account" not in st.secrets and "oauth" not in st.secrets:
+                        st.error("⚠️ Tidak ada credentials yang dikonfigurasi!")
+                        st.info("Tambahkan 'gcp_service_account' atau 'oauth' di .streamlit/secrets.toml")
+                        st.stop()
+
+                with st.spinner("Connecting to Google Sheets..."):
+                    st.session_state.creds = get_credentials()
+                    st.session_state.authenticated = True
+                st.success("✅ Connected!")
+                st.rerun()
+
             except Exception as e:
-                st.error(f"❌ Connection gagal: {e}")
-                st.info("Cek debug panel di atas untuk memastikan credentials sudah dikonfigurasi dengan benar.")
+                st.error(f"❌ Connection gagal!")
+                st.error(str(e))
+
+                # Show helpful message
+                if is_cloud:
+                    st.info(
+                        "💡 Tips untuk Streamlit Cloud:\n"
+                        "- Pastikan Service Account sudah dibuat\n"
+                        "- Pastikan secrets.toml di Cloud berisi `[gcp_service_account]`\n"
+                        "- Pastikan Google Sheets sudah dishare ke service account email\n"
+                        "- Cek debug panel di atas untuk info lebih detail"
+                    )
+                else:
+                    st.info("Cek debug panel di atas untuk memastikan credentials sudah dikonfigurasi dengan benar.")
     
     st.stop()
 
